@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -28,11 +29,10 @@
 #include <algorithm>
 
 using Microsoft::WRL::ComPtr;
-using namespace winrt;
-using namespace Windows::Graphics;
-using namespace Windows::Graphics::Capture;
-using namespace Windows::Graphics::DirectX;
-using namespace Windows::Graphics::DirectX::Direct3D11;
+
+namespace wgc = winrt::Windows::Graphics::Capture;
+namespace wdx = winrt::Windows::Graphics::DirectX;
+namespace wd3d = winrt::Windows::Graphics::DirectX::Direct3D11;
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -512,10 +512,10 @@ namespace
             if (!CreateBackBuffer()) return false;
             if (!CreatePipeline()) return false;
 
-            ComPtr<IInspectable> inspectable;
-            hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.Get(), &inspectable);
+            winrt::com_ptr<::IInspectable> inspectable;
+            hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.Get(), inspectable.put());
             if (FAILED(hr)) return false;
-            m_winrtDevice = inspectable.as<IDirect3DDevice>();
+            m_winrtDevice = inspectable.as<wd3d::IDirect3DDevice>();
 
             return true;
         }
@@ -630,15 +630,15 @@ namespace
             return true;
         }
 
-        GraphicsCaptureItem CreateItemForMonitor(HMONITOR monitor)
+        wgc::GraphicsCaptureItem CreateItemForMonitor(HMONITOR monitor)
         {
             auto factory = winrt::get_activation_factory<
-                GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+                wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
 
-            GraphicsCaptureItem item{nullptr};
+            wgc::GraphicsCaptureItem item{nullptr};
             winrt::check_hresult(factory->CreateForMonitor(
                 monitor,
-                winrt::guid_of<GraphicsCaptureItem>(),
+                winrt::guid_of<wgc::GraphicsCaptureItem>(),
                 winrt::put_abi(item)));
 
             return item;
@@ -648,15 +648,15 @@ namespace
         {
             try
             {
-                if (!GraphicsCaptureSession::IsSupported())
+                if (!wgc::GraphicsCaptureSession::IsSupported())
                     return false;
 
                 m_captureItem = CreateItemForMonitor(m_primary);
                 auto size = m_captureItem.Size();
 
-                m_framePool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+                m_framePool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
                     m_winrtDevice,
-                    DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                    wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
                     2,
                     size);
 
@@ -666,7 +666,7 @@ namespace
                 catch (...) {}
 
                 m_frameToken = m_framePool.FrameArrived(
-                    [this](Direct3D11CaptureFramePool const& sender, IInspectable const&)
+                    [this](wgc::Direct3D11CaptureFramePool const& sender, winrt::Windows::Foundation::IInspectable const&)
                     {
                         OnFrame(sender);
                     });
@@ -706,7 +706,7 @@ namespace
             m_captureHeight = height;
         }
 
-        void OnFrame(Direct3D11CaptureFramePool const& sender)
+        void OnFrame(wgc::Direct3D11CaptureFramePool const& sender)
         {
             std::scoped_lock lock(m_renderMutex);
 
@@ -999,10 +999,10 @@ namespace
         UINT m_captureWidth{};
         UINT m_captureHeight{};
 
-        IDirect3DDevice m_winrtDevice{nullptr};
-        GraphicsCaptureItem m_captureItem{nullptr};
-        Direct3D11CaptureFramePool m_framePool{nullptr};
-        GraphicsCaptureSession m_session{nullptr};
+        wd3d::IDirect3DDevice m_winrtDevice{nullptr};
+        wgc::GraphicsCaptureItem m_captureItem{nullptr};
+        wgc::Direct3D11CaptureFramePool m_framePool{nullptr};
+        wgc::GraphicsCaptureSession m_session{nullptr};
         winrt::event_token m_frameToken{};
 
         std::mutex m_renderMutex;
@@ -1024,7 +1024,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     }
     catch (winrt::hresult_error const& e)
     {
-        std::wstring msg = L"Errore WinRT/D3D:\n" + e.message();
+        std::wstring msg = L"Errore WinRT/D3D:\n";
+        msg += e.message().c_str();
         MessageBoxW(nullptr, msg.c_str(), L"VizoWalker Native", MB_ICONERROR);
     }
     catch (...)

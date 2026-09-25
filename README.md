@@ -1,4 +1,4 @@
-# VizoWalker Native Windows v0.1
+# VizoWalker Native Windows v0.1.1
 
 Proof-of-concept native replacement for the former WebView2-based Extended Canvas.
 
@@ -69,3 +69,13 @@ GitHub Actions:
 - download `VizoWalker-Native-win-arm64`
 
 No WebView2 Runtime is used by this project.
+
+## v0.1.1
+
+Compilation fix only:
+- removed `Windows` namespace ambiguity between Win32 interop headers and C++/WinRT
+- explicitly qualified Windows Graphics Capture / DirectX WinRT types
+- corrected D3D11 COM device conversion to C++/WinRT
+- corrected `winrt::hstring` to `std::wstring` error reporting conversion
+
+No runtime behavior, permissions, display settings, registry, driver, or system-state logic was added.
