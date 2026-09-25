@@ -1,4 +1,4 @@
-# VizoWalker Native Windows v0.1.1
+# VizoWalker Native Windows v0.1.2
 
 Proof-of-concept native replacement for the former WebView2-based Extended Canvas.
 
@@ -79,3 +79,11 @@ Compilation fix only:
 - corrected `winrt::hstring` to `std::wstring` error reporting conversion
 
 No runtime behavior, permissions, display settings, registry, driver, or system-state logic was added.
+
+## v0.1.2
+
+Compilation fix only:
+- fully qualifies the COM `IDirect3DDxgiInterfaceAccess` interface from
+  `windows.graphics.directx.direct3d11.interop.h`
+
+No runtime behavior or system interaction changed.

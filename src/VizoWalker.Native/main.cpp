@@ -718,7 +718,7 @@ namespace
                 auto size = frame.ContentSize();
                 if (size.Width <= 0 || size.Height <= 0) return;
 
-                auto access = frame.Surface().as<IDirect3DDxgiInterfaceAccess>();
+                auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
                 ComPtr<ID3D11Texture2D> source;
                 winrt::check_hresult(access->GetInterface(IID_PPV_ARGS(&source)));
 
