@@ -1,4 +1,4 @@
-# VizoWalker Native Windows v0.3
+# VizoWalker Native Windows v0.3.1 Diagnostic
 
 Proof-of-concept native replacement for the former WebView2-based Extended Canvas.
 
@@ -120,3 +120,33 @@ Mouse Without Borders without affecting normal use.
 
 No automatic resolution/brightness changes, registry changes, drivers, services,
 WebView2, or privileged APIs are used.
+
+
+## v0.3.1 — HID diagnostic build
+
+This build does not attempt another 3DoF fix. It records the raw bytes read from
+the VIZO HID device so the native report layout can be established empirically.
+
+The file is named:
+
+`VizoWalker-HID.log`
+
+It is written next to the executable when that directory is writable. If not,
+the app falls back to the Windows temporary directory.
+
+For each successful HID read the log includes:
+- milliseconds since logging started
+- bytes returned by `ReadFile`
+- report ID
+- up to the first 64 raw bytes in hexadecimal
+- for report ID 3, Q30 candidates at offsets 4/8/12/16 (current assumption),
+  3/7/11/15, and 1/5/9/13, including the resulting quaternion norm
+
+Suggested capture:
+1. launch VizoWalker
+2. keep the glasses still for ~3 seconds
+3. yaw left/right several times
+4. pitch up/down several times
+5. roll left/right several times
+6. close VizoWalker after ~15-20 seconds
+7. attach `VizoWalker-HID.log`

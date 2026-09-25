@@ -27,6 +27,8 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 using Microsoft::WRL::ComPtr;
 
@@ -232,6 +234,11 @@ namespace
             m_handle = chosen;
             m_reportLength = chosenLen;
             m_stop = false;
+
+            // Diagnostic logging is intentionally best-effort: tracking still
+            // runs even if the log file cannot be created.
+            OpenLog();
+
             m_thread = std::thread([this] { ReaderLoop(); });
             return true;
         }
@@ -248,6 +255,8 @@ namespace
 
             if (m_thread.joinable())
                 m_thread.join();
+
+            CloseLog();
         }
 
         bool GetRelative(Quaternion& out)
@@ -267,6 +276,161 @@ namespace
         bool Connected() const { return m_haveCurrent.load(); }
 
     private:
+        bool OpenLog()
+        {
+            wchar_t modulePath[MAX_PATH]{};
+            DWORD n = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+
+            std::wstring path;
+            if (n > 0 && n < MAX_PATH)
+            {
+                path.assign(modulePath, n);
+                size_t slash = path.find_last_of(L"\\/");
+                if (slash != std::wstring::npos)
+                    path.resize(slash + 1);
+                else
+                    path.clear();
+
+                path += L"VizoWalker-HID.log";
+            }
+
+            auto tryOpen = [&](const std::wstring& p) -> HANDLE
+            {
+                return CreateFileW(
+                    p.c_str(),
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ,
+                    nullptr,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr);
+            };
+
+            HANDLE h = INVALID_HANDLE_VALUE;
+            if (!path.empty())
+                h = tryOpen(path);
+
+            if (h == INVALID_HANDLE_VALUE)
+            {
+                wchar_t tempPath[MAX_PATH]{};
+                DWORD t = GetTempPathW(MAX_PATH, tempPath);
+                if (t > 0 && t < MAX_PATH)
+                {
+                    path.assign(tempPath, t);
+                    path += L"VizoWalker-HID.log";
+                    h = tryOpen(path);
+                }
+            }
+
+            if (h == INVALID_HANDLE_VALUE)
+                return false;
+
+            m_logHandle = h;
+            m_logPath = path;
+            m_logStartMs = GetTickCount64();
+            m_logLines = 0;
+
+            LogLine("VizoWalker Native v0.3.1 HID diagnostic log");
+            {
+                std::ostringstream oss;
+                oss << "InputReportByteLength=" << m_reportLength;
+                LogLine(oss.str());
+            }
+            LogLine("Columns: t_ms | got | id | raw hex | candidate Q30 parses");
+            LogLine("Move glasses left/right, up/down, then roll for 15-20 seconds.");
+            return true;
+        }
+
+        void CloseLog()
+        {
+            HANDLE h = m_logHandle.exchange(INVALID_HANDLE_VALUE);
+            if (h != INVALID_HANDLE_VALUE)
+            {
+                FlushFileBuffers(h);
+                CloseHandle(h);
+            }
+        }
+
+        void LogLine(const std::string& line)
+        {
+            HANDLE h = m_logHandle.load();
+            if (h == INVALID_HANDLE_VALUE)
+                return;
+
+            std::string out = line;
+            out += "\r\n";
+
+            DWORD written = 0;
+            WriteFile(
+                h,
+                out.data(),
+                static_cast<DWORD>(out.size()),
+                &written,
+                nullptr);
+
+            ++m_logLines;
+            if ((m_logLines % 60) == 0)
+                FlushFileBuffers(h);
+        }
+
+        static double RawQNorm(
+            int32_t w, int32_t x, int32_t y, int32_t z)
+        {
+            const double dw = static_cast<double>(w) / Q30;
+            const double dx = static_cast<double>(x) / Q30;
+            const double dy = static_cast<double>(y) / Q30;
+            const double dz = static_cast<double>(z) / Q30;
+            return std::sqrt(dw*dw + dx*dx + dy*dy + dz*dz);
+        }
+
+        void LogReport(const uint8_t* report, DWORD got)
+        {
+            std::ostringstream oss;
+            oss << "t=" << (GetTickCount64() - m_logStartMs)
+                << "ms got=" << got;
+
+            if (got > 0)
+                oss << " id=" << unsigned(report[0]);
+
+            oss << " hex=";
+            oss << std::hex << std::setfill('0');
+            const DWORD dump = (got < 64) ? got : 64;
+            for (DWORD i = 0; i < dump; ++i)
+            {
+                if (i) oss << ' ';
+                oss << std::setw(2) << unsigned(report[i]);
+            }
+            oss << std::dec;
+
+            // Log several alignments. A = current implementation.
+            // The alternatives let us determine the actual Win32 HID layout
+            // directly from the captured bytes rather than guessing again.
+            auto appendCandidate = [&](const char* name, int a, int b, int c, int d)
+            {
+                if (got < static_cast<DWORD>(d + 4))
+                    return;
+
+                const int32_t w = ReadBE32(&report[a]);
+                const int32_t x = ReadBE32(&report[b]);
+                const int32_t y = ReadBE32(&report[c]);
+                const int32_t z = ReadBE32(&report[d]);
+
+                oss << " | " << name
+                    << "=[" << w << "," << x << "," << y << "," << z << "]"
+                    << " norm=" << std::fixed << std::setprecision(6)
+                    << RawQNorm(w, x, y, z);
+            };
+
+            if (got > 0 && report[0] == 3)
+            {
+                appendCandidate("Q@4", 4, 8, 12, 16);
+                appendCandidate("Q@3", 3, 7, 11, 15);
+                appendCandidate("Q@1", 1, 5, 9, 13);
+            }
+
+            LogLine(oss.str());
+        }
+
         void ReaderLoop()
         {
             std::vector<uint8_t> report(std::max<USHORT>(m_reportLength, 64));
@@ -284,6 +448,8 @@ namespace
                     Sleep(20);
                     continue;
                 }
+
+                LogReport(report.data(), got);
 
                 // Win32 HID ReadFile includes the report ID at byte 0.
                 // WebHID report 3 exposed payload bytes 3..18 as Q30 W,X,Y,Z,
@@ -311,6 +477,10 @@ namespace
         }
 
         std::atomic<HANDLE> m_handle{INVALID_HANDLE_VALUE};
+        std::atomic<HANDLE> m_logHandle{INVALID_HANDLE_VALUE};
+        std::wstring m_logPath;
+        ULONGLONG m_logStartMs{0};
+        uint64_t m_logLines{0};
         USHORT m_reportLength{64};
         std::atomic<bool> m_stop{false};
         std::atomic<bool> m_haveCurrent{false};
@@ -477,7 +647,7 @@ namespace
             m_hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
                 className,
-                L"VizoWalker Native v0.3",
+                L"VizoWalker Native v0.3.1 Diagnostic",
                 WS_POPUP,
                 x, y, w, h,
                 nullptr, nullptr, m_instance, this);
@@ -556,7 +726,12 @@ namespace
             add(0, L"STATIC",
                 L"Ctrl+Alt+Shift+V apre/chiude questo menu",
                 SS_CENTER,
-                20, 207, 325, 22, 0);
+                20, 198, 325, 22, 0);
+
+            add(0, L"STATIC",
+                L"Log HID: VizoWalker-HID.log accanto all'EXE",
+                SS_CENTER,
+                20, 220, 325, 22, 0);
 
             ShowWindow(m_menuHwnd, SW_HIDE);
             return true;
