@@ -1,0 +1,34 @@
+name: Build VizoWalker Native
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-arm64:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ARM64 Release
+        shell: pwsh
+        run: |
+          msbuild VizoWalker.Native.sln `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=ARM64 `
+            /p:OutDir="$env:GITHUB_WORKSPACE\publish\arm64\\"
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VizoWalker-Native-win-arm64
+          path: publish/arm64/**
+          if-no-files-found: error
