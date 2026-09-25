@@ -44,7 +44,18 @@ namespace
 {
     constexpr UINT HOTKEY_RECENTER = 1;
     constexpr UINT HOTKEY_QUIT = 2;
-    constexpr UINT HOTKEY_CURSOR = 3;
+    constexpr UINT HOTKEY_MENU = 3;
+
+    constexpr UINT_PTR RENDER_TIMER_ID = 1;
+    constexpr UINT RENDER_INTERVAL_MS = 16;
+
+    constexpr int IDC_SIZE_MINUS = 1001;
+    constexpr int IDC_SIZE_PLUS = 1002;
+    constexpr int IDC_RECENTER = 1003;
+    constexpr int IDC_CURSOR_LOCK = 1004;
+    constexpr int IDC_CLOSE_MENU = 1005;
+    constexpr int IDC_SIZE_LABEL = 1006;
+    constexpr int IDC_TRACKING_LABEL = 1007;
     constexpr double Q30 = 1073741824.0;
     constexpr double DEG = 3.14159265358979323846 / 180.0;
 
@@ -340,6 +351,14 @@ namespace
             if (!CreateAppWindow())
                 return 2;
 
+            if (!CreateMenuWindow())
+            {
+                MessageBoxW(m_hwnd,
+                    L"Impossibile creare il pannello di controllo.",
+                    L"VizoWalker Native", MB_ICONERROR);
+                return 2;
+            }
+
             if (!InitD3D())
             {
                 MessageBoxW(m_hwnd, L"Impossibile inizializzare Direct3D 11.", L"VizoWalker Native", MB_ICONERROR);
@@ -354,18 +373,34 @@ namespace
                 return 4;
             }
 
-            m_tracker.Start();
+            const bool trackerStarted = m_tracker.Start();
 
             RegisterHotKey(m_hwnd, HOTKEY_RECENTER, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'C');
             RegisterHotKey(m_hwnd, HOTKEY_QUIT, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'Q');
-            RegisterHotKey(m_hwnd, HOTKEY_CURSOR, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'V');
+            RegisterHotKey(m_hwnd, HOTKEY_MENU, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'V');
 
             ShowWindow(m_hwnd, SW_SHOW);
             UpdateWindow(m_hwnd);
 
-            // Match the previous Extended Canvas workflow: keep the real Windows
-            // pointer on the primary Surface display. Toggle with Ctrl+Alt+Shift+V.
-            SetCursorLock(true);
+            // Rendering is independent from capture-frame delivery: head movement
+            // must update the world-locked plane even on a completely static desktop.
+            SetTimer(m_hwnd, RENDER_TIMER_ID, RENDER_INTERVAL_MS, nullptr);
+
+            // The current ClipCursor implementation is experimental and may interact
+            // badly with utilities such as Mouse Without Borders. Keep it OFF by
+            // default and expose it explicitly in the control panel.
+            SetCursorLock(false);
+            UpdateMenuState();
+
+            if (!trackerStarted)
+            {
+                MessageBoxW(
+                    m_hwnd,
+                    L"Il display funziona, ma il dispositivo HID dei VIZO non è stato aperto.\n"
+                    L"Il mirroring resterà fisso finché il tracking non viene rilevato.",
+                    L"VizoWalker Native - tracking non disponibile",
+                    MB_ICONWARNING | MB_OK);
+            }
 
             MSG msg{};
             while (GetMessageW(&msg, nullptr, 0, 0) > 0)
@@ -442,12 +477,220 @@ namespace
             m_hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
                 className,
-                L"VizoWalker Native v0.1",
+                L"VizoWalker Native v0.3",
                 WS_POPUP,
                 x, y, w, h,
                 nullptr, nullptr, m_instance, this);
 
             return m_hwnd != nullptr;
+        }
+
+        bool CreateMenuWindow()
+        {
+            const wchar_t* className = L"VizoWalkerNativeMenuWindow";
+
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            wc.hInstance = m_instance;
+            wc.lpfnWndProc = MenuWindowProcStatic;
+            wc.lpszClassName = className;
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+
+            if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+                return false;
+
+            constexpr int menuW = 380;
+            constexpr int menuH = 270;
+            int primaryW = m_primaryRect.right - m_primaryRect.left;
+            int primaryH = m_primaryRect.bottom - m_primaryRect.top;
+            int x = m_primaryRect.left + (primaryW - menuW) / 2;
+            int y = m_primaryRect.top + (primaryH - menuH) / 2;
+
+            m_menuHwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                className,
+                L"VizoWalker - Controlli",
+                WS_CAPTION | WS_SYSMENU,
+                x, y, menuW, menuH,
+                nullptr, nullptr, m_instance, this);
+
+            if (!m_menuHwnd) return false;
+
+            HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+            auto add = [&](DWORD exStyle, const wchar_t* cls, const wchar_t* caption,
+                           DWORD style, int cx, int cy, int cw, int ch, int id) -> HWND
+            {
+                HWND h = CreateWindowExW(
+                    exStyle, cls, caption,
+                    WS_CHILD | WS_VISIBLE | style,
+                    cx, cy, cw, ch,
+                    m_menuHwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                    m_instance, nullptr);
+                if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+                return h;
+            };
+
+            add(0, L"STATIC", L"Dimensione schermo", 0, 20, 22, 150, 22, 0);
+            m_sizeLabel = add(0, L"STATIC", L"", SS_CENTER, 162, 22, 70, 22, IDC_SIZE_LABEL);
+            add(0, L"BUTTON", L"-", BS_PUSHBUTTON, 242, 17, 46, 30, IDC_SIZE_MINUS);
+            add(0, L"BUTTON", L"+", BS_PUSHBUTTON, 298, 17, 46, 30, IDC_SIZE_PLUS);
+
+            m_trackingLabel = add(
+                0, L"STATIC", L"Tracking VIZO: ...", 0,
+                20, 67, 325, 22, IDC_TRACKING_LABEL);
+
+            m_cursorCheck = add(
+                0, L"BUTTON",
+                L"Confinamento cursore sperimentale",
+                BS_AUTOCHECKBOX,
+                20, 105, 325, 26, IDC_CURSOR_LOCK);
+
+            add(0, L"BUTTON", L"Ricentra", BS_PUSHBUTTON,
+                20, 153, 150, 34, IDC_RECENTER);
+            add(0, L"BUTTON", L"Chiudi menu", BS_PUSHBUTTON,
+                194, 153, 150, 34, IDC_CLOSE_MENU);
+
+            add(0, L"STATIC",
+                L"Ctrl+Alt+Shift+V apre/chiude questo menu",
+                SS_CENTER,
+                20, 207, 325, 22, 0);
+
+            ShowWindow(m_menuHwnd, SW_HIDE);
+            return true;
+        }
+
+        void UpdateMenuState()
+        {
+            if (!m_menuHwnd) return;
+
+            if (m_sizeLabel)
+            {
+                int percent = static_cast<int>(std::lround(m_canvasScale * 100.0));
+                std::wstring value = std::to_wstring(percent) + L"%";
+                SetWindowTextW(m_sizeLabel, value.c_str());
+            }
+
+            if (m_trackingLabel)
+            {
+                SetWindowTextW(
+                    m_trackingLabel,
+                    m_tracker.Connected()
+                        ? L"Tracking VIZO: OK"
+                        : L"Tracking VIZO: in attesa / non disponibile");
+            }
+
+            if (m_cursorCheck)
+            {
+                SendMessageW(
+                    m_cursorCheck,
+                    BM_SETCHECK,
+                    m_cursorLocked ? BST_CHECKED : BST_UNCHECKED,
+                    0);
+            }
+        }
+
+        void ToggleMenu()
+        {
+            if (!m_menuHwnd) return;
+
+            if (IsWindowVisible(m_menuHwnd))
+            {
+                ShowWindow(m_menuHwnd, SW_HIDE);
+                return;
+            }
+
+            UpdateMenuState();
+            ShowWindow(m_menuHwnd, SW_SHOW);
+            SetWindowPos(
+                m_menuHwnd, HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetForegroundWindow(m_menuHwnd);
+        }
+
+        void AdjustCanvasScale(double delta)
+        {
+            m_canvasScale = std::clamp(m_canvasScale + delta, 0.40, 1.30);
+            UpdateMenuState();
+        }
+
+        LRESULT MenuWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+        {
+            switch (msg)
+            {
+            case WM_COMMAND:
+                switch (LOWORD(wp))
+                {
+                case IDC_SIZE_MINUS:
+                    AdjustCanvasScale(-0.05);
+                    return 0;
+
+                case IDC_SIZE_PLUS:
+                    AdjustCanvasScale(+0.05);
+                    return 0;
+
+                case IDC_RECENTER:
+                    m_tracker.Recenter();
+                    return 0;
+
+                case IDC_CURSOR_LOCK:
+                    if (m_cursorCheck)
+                    {
+                        bool enabled =
+                            SendMessageW(m_cursorCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                        SetCursorLock(enabled);
+                        UpdateMenuState();
+                    }
+                    return 0;
+
+                case IDC_CLOSE_MENU:
+                    ShowWindow(hwnd, SW_HIDE);
+                    return 0;
+                }
+                break;
+
+            case WM_CLOSE:
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+
+            case WM_KEYDOWN:
+                if (wp == VK_ESCAPE)
+                {
+                    ShowWindow(hwnd, SW_HIDE);
+                    return 0;
+                }
+                break;
+
+            case WM_DESTROY:
+                m_menuHwnd = nullptr;
+                return 0;
+            }
+
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+
+        static LRESULT CALLBACK MenuWindowProcStatic(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+        {
+            NativeSpatialApp* self = nullptr;
+
+            if (msg == WM_NCCREATE)
+            {
+                auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+                self = reinterpret_cast<NativeSpatialApp*>(cs->lpCreateParams);
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+                self->m_menuHwnd = hwnd;
+            }
+            else
+            {
+                self = reinterpret_cast<NativeSpatialApp*>(
+                    GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            }
+
+            return self ? self->MenuWindowProc(hwnd, msg, wp, lp)
+                        : DefWindowProcW(hwnd, msg, wp, lp);
         }
 
         bool InitD3D()
@@ -727,7 +970,6 @@ namespace
                     static_cast<UINT>(size.Height));
 
                 m_context->CopyResource(m_captureTexture.Get(), source.Get());
-                Render();
             }
             catch (...)
             {
@@ -854,11 +1096,15 @@ namespace
                 ClipCursor(&m_primaryRect);
             else
                 ClipCursor(nullptr);
-        }
 
-        void ToggleCursorLock()
-        {
-            SetCursorLock(!m_cursorLocked);
+            if (m_cursorCheck)
+            {
+                SendMessageW(
+                    m_cursorCheck,
+                    BM_SETCHECK,
+                    m_cursorLocked ? BST_CHECKED : BST_UNCHECKED,
+                    0);
+            }
         }
 
         void Cleanup()
@@ -869,10 +1115,15 @@ namespace
 
             if (m_hwnd)
             {
+                KillTimer(m_hwnd, RENDER_TIMER_ID);
                 UnregisterHotKey(m_hwnd, HOTKEY_RECENTER);
                 UnregisterHotKey(m_hwnd, HOTKEY_QUIT);
-                UnregisterHotKey(m_hwnd, HOTKEY_CURSOR);
+                UnregisterHotKey(m_hwnd, HOTKEY_MENU);
             }
+
+            if (m_menuHwnd && IsWindow(m_menuHwnd))
+                DestroyWindow(m_menuHwnd);
+            m_menuHwnd = nullptr;
 
             m_tracker.Stop();
 
@@ -901,6 +1152,20 @@ namespace
         {
             switch (msg)
             {
+            case WM_TIMER:
+                if (wp == RENDER_TIMER_ID)
+                {
+                    std::scoped_lock lock(m_renderMutex);
+                    Render();
+
+                    // Refresh the status label opportunistically while the menu is open.
+                    if (m_menuHwnd && IsWindowVisible(m_menuHwnd))
+                        UpdateMenuState();
+
+                    return 0;
+                }
+                break;
+
             case WM_HOTKEY:
                 if (wp == HOTKEY_RECENTER)
                 {
@@ -912,9 +1177,9 @@ namespace
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     return 0;
                 }
-                if (wp == HOTKEY_CURSOR)
+                if (wp == HOTKEY_MENU)
                 {
-                    ToggleCursorLock();
+                    ToggleMenu();
                     return 0;
                 }
                 break;
@@ -964,6 +1229,10 @@ namespace
 
         HINSTANCE m_instance{};
         HWND m_hwnd{};
+        HWND m_menuHwnd{};
+        HWND m_sizeLabel{};
+        HWND m_trackingLabel{};
+        HWND m_cursorCheck{};
         HMONITOR m_primary{};
         HMONITOR m_output{};
         RECT m_primaryRect{};

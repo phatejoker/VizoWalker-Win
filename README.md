@@ -1,4 +1,4 @@
-# VizoWalker Native Windows v0.1.2
+# VizoWalker Native Windows v0.3
 
 Proof-of-concept native replacement for the former WebView2-based Extended Canvas.
 
@@ -87,3 +87,36 @@ Compilation fix only:
   `windows.graphics.directx.direct3d11.interop.h`
 
 No runtime behavior or system interaction changed.
+
+
+## v0.3 — first usable spatial-mirror candidate
+
+This build combines the spatial-render fix with a native control panel.
+
+### Rendering
+- Windows Graphics Capture only updates the captured Surface texture.
+- The VIZO output is rendered independently at ~60 Hz.
+- The latest HID quaternion is applied continuously, so head motion can move the
+  projected plane even if the captured desktop is static.
+
+### Control panel
+Open/close with **Ctrl+Alt+Shift+V**. The panel appears on the primary Surface
+display and includes:
+- screen size: `-` / `+`, from 40% to 130% in 5% steps
+- VIZO tracking status
+- recenter
+- experimental cursor confinement toggle
+
+### Cursor confinement
+The existing `ClipCursor()` implementation is deliberately **OFF by default**.
+It is preserved only as an experimental toggle so it can be tested later against
+Mouse Without Borders without affecting normal use.
+
+### Other controls
+- Ctrl+Alt+Shift+C — recenter
+- Ctrl+Alt+Shift+Q — emergency quit
+- Esc on the VIZO fullscreen window — quit
+- Esc inside the control panel — close the panel
+
+No automatic resolution/brightness changes, registry changes, drivers, services,
+WebView2, or privileged APIs are used.
